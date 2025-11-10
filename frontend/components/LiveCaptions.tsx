@@ -122,6 +122,42 @@ export default function LiveCaptions({
     // Reset cleanup flag when enabled
     isCleanupRef.current = false
     
+    // CRITICAL FIX: Add periodic health check to ensure MediaRecorder stays active
+    const healthCheckInterval = setInterval(() => {
+      if (!enabled || !localStream || isCleanupRef.current) {
+        return
+      }
+      
+      const recorder = mediaRecorderRef.current
+      const ws = wsRef.current
+      const audioTrack = localStream.getAudioTracks()[0]
+      
+      console.log('🔄 Health check:', {
+        recorderState: recorder?.state || 'null',
+        wsState: ws?.readyState || 'null',
+        trackState: audioTrack?.readyState || 'null',
+        trackEnabled: audioTrack?.enabled || false,
+        isConnected
+      })
+      
+      // Restart MediaRecorder if it stopped unexpectedly
+      if ((!recorder || recorder.state === 'inactive') && 
+          audioTrack?.readyState === 'live' && 
+          ws?.readyState === WebSocket.OPEN) {
+        console.warn('⚠️ Health check: MediaRecorder inactive, restarting...')
+        setupMediaRecorder()
+      }
+      
+      // Send ping to keep WebSocket alive
+      if (ws?.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }))
+        } catch (e) {
+          console.warn('Failed to send ping:', e)
+        }
+      }
+    }, 10000) // Check every 10 seconds
+    
     /**
      * Calculate exponential backoff delay for WebSocket reconnection
      * 
@@ -187,7 +223,8 @@ export default function LiveCaptions({
           console.log('📝 Caption received:', {
             speaker: newCaption.speaker,
             original: newCaption.original_text.substring(0, 50),
-            translated: newCaption.translated_text.substring(0, 50)
+            translated: newCaption.translated_text.substring(0, 50),
+            connectionState: wsRef.current?.readyState
           })
           
           // Task 7.3: Reset STT failure count on successful caption
@@ -198,6 +235,17 @@ export default function LiveCaptions({
             const updated = [...prev, newCaption]
             return updated.slice(-10)
           })
+          
+          // CRITICAL FIX: Ensure MediaRecorder is still running after receiving caption
+          if (mediaRecorderRef.current?.state === 'inactive' && enabled && localStream) {
+            console.warn('⚠️ MediaRecorder stopped after caption received, restarting...')
+            setTimeout(() => {
+              if (enabled && localStream && !isCleanupRef.current) {
+                setupMediaRecorder()
+              }
+            }, 100)
+          }
+          
         } else if (data.type === 'connected') {
           console.log('✅ Caption service connected:', data.message)
           // Clear connection errors on successful connection
@@ -226,14 +274,17 @@ export default function LiveCaptions({
               details: 'API quota exceeded. Please try again later.'
             })
           } else {
-            // Generic error
-            console.error('❌ Backend error:', data.message)
+            // Generic error - don't let it stop the caption flow
+            console.error('❌ Backend error (continuing):', data.message)
           }
+        } else if (data.type === 'pong') {
+          console.log('🏓 Pong received - connection alive')
         } else {
           console.log('📨 Received caption message:', data.type, data)
         }
       } catch (err) {
         console.error('Error parsing caption message:', err, 'Raw data:', event.data)
+        // Don't let parsing errors stop the caption flow
       }
     }
     
@@ -619,8 +670,9 @@ export default function LiveCaptions({
         })
 
         // Check if track is actually active
-        if (audioTrack.readyState !== 'live') {
-          console.warn('⚠️ Audio track not in "live" state:', audioTrack.readyState)
+        const initialTrackState = audioTrack.readyState
+        if (initialTrackState !== 'live') {
+          console.warn('⚠️ Audio track not in "live" state:', initialTrackState)
           
           // Task 2.3: Add retry logic if track is not ready
           let retryCount = 0
@@ -633,8 +685,9 @@ export default function LiveCaptions({
             console.log(`📊 Audio track state after retry ${retryCount}:`, audioTrack.readyState)
           }
           
-          if (audioTrack.readyState !== 'live') {
-            console.error('❌ Audio track failed to become live after', maxRetries, 'retries. Current state:', audioTrack.readyState)
+          const finalTrackState = audioTrack.readyState
+          if (finalTrackState !== 'live') {
+            console.error('❌ Audio track failed to become live after', maxRetries, 'retries. Current state:', finalTrackState)
             return
           }
           
@@ -659,8 +712,10 @@ export default function LiveCaptions({
           muted: audioTrack.muted
         })
         
-        if (audioTrack.readyState !== 'live') {
-          console.error('❌ Audio track no longer live after delay:', audioTrack.readyState)
+        // Check if audio track is still active
+        const trackState = audioTrack.readyState
+        if (trackState !== 'live') {
+          console.error('❌ Audio track no longer live after delay:', trackState)
           return
         }
         
@@ -728,6 +783,7 @@ export default function LiveCaptions({
         const MIN_CHUNK_SIZE = 100 // Skip chunks smaller than 100 bytes
         const MAX_EMPTY_CHUNKS = 3 // Allow a few empty chunks at start
         let firstChunkReceived = false
+        let isRecorderActive = true // Track if recorder should be active
         
         // Stream audio chunks to backend at 3-second intervals for better STT accuracy
         mediaRecorder.ondataavailable = (event) => {
@@ -869,6 +925,7 @@ export default function LiveCaptions({
         
         mediaRecorder.onstart = () => {
           console.log('✅ MediaRecorder started - Audio recording active for captions')
+          isRecorderActive = true
           console.log('📊 MediaRecorder state:', {
             state: mediaRecorder.state,
             mimeType: mediaRecorder.mimeType,
@@ -890,8 +947,12 @@ export default function LiveCaptions({
           console.log('📊 Recording session summary:', {
             totalChunksSent: audioChunkCountRef.current,
             chunksQueued: chunkQueueRef.current.length,
-            finalState: mediaRecorderRef.current?.state
+            finalState: mediaRecorderRef.current?.state,
+            isRecorderActive
           })
+          
+          // Mark recorder as inactive
+          isRecorderActive = false
           
           // Task 3.3: Check why MediaRecorder stopped
           const audioTrack = localStream?.getAudioTracks()[0]
@@ -945,6 +1006,7 @@ export default function LiveCaptions({
               const currentWs = wsRef.current
               if (currentWs && currentWs.readyState === WebSocket.OPEN) {
                 console.log('🔄 Restarting MediaRecorder (WebSocket is ready)...')
+                isRecorderActive = true
                 setupMediaRecorder()
               } else {
                 console.log('⏳ WebSocket not ready, waiting before restarting MediaRecorder...')
@@ -964,6 +1026,7 @@ export default function LiveCaptions({
                   if (ws && ws.readyState === WebSocket.OPEN) {
                     clearInterval(checkInterval)
                     console.log('🔄 WebSocket ready, restarting MediaRecorder...')
+                    isRecorderActive = true
                     setupMediaRecorder()
                   } else if (checkCount >= maxChecks) {
                     clearInterval(checkInterval)
@@ -1094,6 +1157,11 @@ export default function LiveCaptions({
     return () => {
       console.log('🧹 Cleaning up LiveCaptions component...')
       isCleanupRef.current = true
+      
+      // Clear health check interval
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval)
+      }
       
       // Clear all timeouts
       if (setupTimeoutRef.current) {

@@ -1,0 +1,13 @@
+# Minimal requirements for Render free tier (512MB limit)
+# Core FastAPI dependencies only
+
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-dotenv==1.0.1
+pydantic==2.9.2
+
+# Database (lightweight)
+supabase==2.9.0
+
+# Basic utilities
+python-multipart==0.0.9

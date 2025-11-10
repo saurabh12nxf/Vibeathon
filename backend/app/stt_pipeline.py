@@ -143,12 +143,17 @@ class STTPipeline:
                 logger.info("To enable Whisper fallback, set OPENAI_API_KEY environment variable.")
         
         # Initialize embedding model for Community Lexicon
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
+        # Skip heavy models on memory-constrained environments (Render free tier)
+        if os.getenv('DISABLE_SENTENCE_TRANSFORMERS') or os.getenv('DISABLE_COMMUNITY_LEXICON'):
+            logger.info("⚡ Skipping sentence transformers (memory optimization)")
+            self.embedding_model = None
+        elif SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
                 self.embedding_model = SentenceTransformer('Supabase/gte-small')
                 logger.info("✅ Embedding model initialized (gte-small)")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to initialize embedding model: {str(e)}")
+                self.embedding_model = None
     
     def _verify_google_credentials(self):
         """

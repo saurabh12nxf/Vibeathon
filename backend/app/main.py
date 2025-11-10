@@ -88,12 +88,41 @@ app.include_router(health_tips_router)
 # Include captions routes for live transcription
 app.include_router(captions_router)
 
-# Enable CORS for frontend integration
+# Production CORS configuration
+import os
+
+# Base allowed origins for development
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001", 
+    "http://localhost:3002",
+    "https://localhost:3000",
+]
+
+# Add production frontend URLs from environment
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    allowed_origins.append(frontend_url)
+
+# Add common production domains (update these with your actual domains)
+production_domains = [
+    "https://arogya-ai.vercel.app",
+    "https://your-app.vercel.app",
+    "https://your-app.netlify.app",
+]
+
+# Only add production domains in production environment
+if os.getenv("RAILWAY_ENVIRONMENT") == "production" or os.getenv("RENDER") or os.getenv("NODE_ENV") == "production":
+    allowed_origins.extend(production_domains)
+    logger.info(f"🌐 Production CORS enabled for: {production_domains}")
+
+logger.info(f"🔒 CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 

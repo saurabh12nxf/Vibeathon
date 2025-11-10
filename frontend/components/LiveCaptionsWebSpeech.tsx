@@ -48,7 +48,7 @@ export default function LiveCaptionsWebSpeech({
   const [captions, setCaptions] = useState<Caption[]>([])
   const [isListening, setIsListening] = useState(false)
   const [isSupported, setIsSupported] = useState(false)
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const recognitionRef = useRef<any>(null)
   const captionsEndRef = useRef<HTMLDivElement>(null)
 
   // Check if Web Speech API is supported
@@ -99,7 +99,7 @@ export default function LiveCaptionsWebSpeech({
       setIsListening(true)
     }
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    recognition.onresult = (event: any) => {
       let interimTranscript = ''
       let finalTranscript = ''
 
@@ -126,7 +126,7 @@ export default function LiveCaptionsWebSpeech({
       }
     }
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+    recognition.onerror = (event: any) => {
       console.error('Speech recognition error:', event.error)
       if (event.error === 'no-speech') {
         // This is normal, just restart

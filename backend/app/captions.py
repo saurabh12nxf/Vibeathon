@@ -249,15 +249,21 @@ class CaptionManager:
             processing_time = (time.time() - processing_start_time) * 1000
             logger.error(f"Error processing audio for captions: {e} (processing time: {processing_time:.2f}ms)", exc_info=True)
             
-            # Only send error if connection is still open
-            try:
-                if sender.client_state.name == "CONNECTED":
-                    await sender.send_json({
-                        "type": "error",
-                        "message": "Failed to generate caption"
-                    })
-            except:
-                pass
+            # Don't send error messages for every failure to avoid spamming the client
+            # Only send error if it's a critical failure
+            error_msg = str(e).lower()
+            if "quota" in error_msg or "authentication" in error_msg or "credentials" in error_msg:
+                try:
+                    if sender.client_state.name == "CONNECTED":
+                        await sender.send_json({
+                            "type": "error",
+                            "message": f"Caption service error: {str(e)}"
+                        })
+                except:
+                    pass
+            else:
+                # For other errors, just log and continue silently
+                logger.debug(f"Non-critical audio processing error, continuing: {e}")
 
 
 # Global caption manager instance
@@ -323,6 +329,15 @@ async def caption_endpoint(
                         )
                     except Exception as process_error:
                         logger.error(f"Error in process_audio: {process_error}", exc_info=True)
+                        # Send error message to client but don't close connection
+                        try:
+                            if websocket.client_state.name == "CONNECTED":
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": "Audio processing failed, continuing..."
+                                })
+                        except:
+                            pass
                         # Continue processing other chunks even if one fails
                     
                 elif "text" in data:
@@ -333,17 +348,21 @@ async def caption_endpoint(
                     # Handle control messages (e.g., pause, resume)
                     if message.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
+                        logger.debug(f"Ping/pong with {user_type}")
+                    else:
+                        logger.debug(f"Received control message from {user_type}: {message}")
                     
             except json.JSONDecodeError:
                 logger.error("Invalid JSON received")
             except Exception as receive_error:
                 # Handle receive errors gracefully
-                if "disconnect" in str(receive_error).lower() or "disconnected" in str(receive_error).lower():
+                error_msg = str(receive_error).lower()
+                if "disconnect" in error_msg or "disconnected" in error_msg or "closed" in error_msg:
                     logger.info(f"WebSocket disconnected during receive: {user_type}")
                     break
                 else:
                     logger.error(f"Error receiving WebSocket message: {receive_error}")
-                    # Continue to next iteration instead of breaking
+                    # Continue to next iteration instead of breaking for non-critical errors
                     continue
                 
     except WebSocketDisconnect:
